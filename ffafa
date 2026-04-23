@@ -1,0 +1,142 @@
+admin>create account inside db>login>otp>dashboard
+staff>added by admin user management>email verified>login>otp>dashboard
+vendor/tenant>register>verifies email>admin approval>login>otp>dashboard
+
+npx tailwindcss -i ./assets/css/input.css -o ./assets/css/style.css --watch
+
+C:\xampp\htdocs\LGU3\
+│
+├── index.php
+├── register.php
+│
+├── config\
+│   └── db.php
+│
+├── includes\
+│   └── functions.php
+│
+├── actions\
+│   ├── register.php
+│   └── verify_email.php
+│
+├── phpmailer\
+│   └── src\ (PHPMailer files)
+│
+└── assets\
+    └── css\
+        ├── input.css
+        └── style.css
+
+        
+
+        dashboard
+        <?php
+// admin/dashboard.php (THE REAL FINAL VERSION)
+
+// Laging unahin ang session at database
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+include('../config/db.php');
+include('includes/functions.php'); // <-- I-INCLUDE ANG BAGONG AI FUNCTIONS FILE
+$page_title = "Admin Dashboard";
+
+// Access control
+if (!isset($_SESSION['role']) || !in_array($_SESSION['role'], ['admin', 'staff'])) {
+  header("Location: ../index.php");
+  exit();
+}
+
+// ----------------------------------------------------
+// 1. DATA PARA SA STATS CARDS
+// ----------------------------------------------------
+$staff_count_res = $conn->query("SELECT COUNT(*) AS total FROM users WHERE role='staff'");
+$staff_count = $staff_count_res->fetch_assoc()['total'] ?? 0;
+$vendor_count_res = $conn->query("SELECT COUNT(*) AS total FROM users WHERE role='vendor' AND approved_by_admin=1");
+$vendor_count = $vendor_count_res->fetch_assoc()['total'] ?? 0;
+$pending_count_res = $conn->query("SELECT COUNT(*) AS total FROM users WHERE role='vendor' AND approved_by_admin=0");
+$pending_count = $pending_count_res->fetch_assoc()['total'] ?? 0;
+
+// ----------------------------------------------------
+// 2. "AI" REVENUE FORECAST LOGIC
+// ----------------------------------------------------
+$forecast_revenue = "Not enough data";
+$revenue_history_query = $conn->query("
+    SELECT DATE_FORMAT(payment_date, '%Y-%m') AS month_key, SUM(amount) AS total_revenue
+    FROM transactions
+    WHERE status = 'valid' AND payment_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    GROUP BY month_key ORDER BY month_key
+");
+$months_x = [];
+$revenues_y = [];
+$month_counter = 1;
+
+if ($revenue_history_query && $revenue_history_query->num_rows > 2) {
+    while($row = $revenue_history_query->fetch_assoc()){
+        $months_x[] = $month_counter++;
+        $revenues_y[] = (float)$row['total_revenue'];
+    }
+    $regression = simple_linear_regression($months_x, $revenues_y);
+    $predicted_value = ($regression['slope'] * (count($months_x) + 1)) + $regression['intercept'];
+    $forecast_revenue = "₱" . number_format($predicted_value, 2);
+} elseif ($revenue_history_query && $revenue_history_query->num_rows > 0) {
+    $total_sum = 0; $num_rows = $revenue_history_query->num_rows;
+    while($row = $revenue_history_query->fetch_assoc()){
+        $total_sum += (float)$row['total_revenue'];
+    }
+    $average = $num_rows > 0 ? $total_sum / $num_rows : 0;
+    $forecast_revenue = "≈ ₱" . number_format($average, 2) . " (avg)";
+}
+
+// ----------------------------------------------------
+// VARIABLES PARA SA LAYOUT
+// ----------------------------------------------------
+$current_user = htmlspecialchars($_SESSION["name"] ?? 'Guest');
+$current_role = htmlspecialchars($_SESSION["role"] ?? "User");
+?>
+
+<!-- ======================= HTML VIEW ========================= -->
+<?php include('includes/header.php'); ?>
+<body class="bg-gray-100 flex h-screen overflow-hidden">
+
+    <?php include('includes/navbar.php'); ?>
+
+    <div class="flex flex-col flex-1 overflow-hidden">
+        <?php include('includes/top.php'); ?>
+
+        <main class="flex-1 overflow-y-auto p-6">
+            <h2 class="text-2xl font-semibold mb-6 text-gray-700">Welcome, <?= htmlspecialchars($_SESSION['name'] ?? 'Admin') ?>!</h2>
+
+            <!-- STATS & AI CARDS -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+              <div class="bg-white p-5 rounded-lg shadow text-center"><p class="text-gray-500 text-sm">Total Active Vendors</p><p class="text-3xl font-bold text-green-700"><?= $vendor_count ?></p></div>
+              <div class="bg-white p-5 rounded-lg shadow text-center"><p class="text-gray-500 text-sm">Total Staff</p><p class="text-3xl font-bold text-blue-700"><?= $staff_count ?></p></div>
+              <div class="bg-white p-5 rounded-lg shadow text-center"><p class="text-gray-500 text-sm">Pending Approvals</p><p class="text-3xl font-bold text-yellow-600"><?= $pending_count ?></p></div>
+              <div class="bg-indigo-600 text-white p-5 rounded-lg shadow text-center"><p class="opacity-80 text-sm">Forecasted Revenue (Next Month)</p><p class="text-3xl font-bold mt-1"><?= $forecast_revenue ?></p></div>
+            </div>
+            
+            <!-- CHARTS SECTION -->
+            <div class="grid grid-cols-1 lg:grid-cols-5 gap-8">
+                <div class="lg:col-span-3 bg-white p-6 rounded-lg shadow-md border"><h3 class="text-lg font-semibold mb-4">Monthly Revenue Summary</h3><div style="height: 350px; position: relative;"><canvas id="revenueChart"></canvas></div></div>
+                <div class="lg:col-span-2 bg-white p-6 rounded-lg shadow-md border"><h3 class="text-lg font-semibold mb-4">Revenue Breakdown (<?= date('Y') ?>)</h3><div style="height: 350px; position: relative;"><canvas id="categoryPieChart"></canvas></div></div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/global.js"></script>
+    <script src="js/dashboard.js"></script>
+    <?php include('includes/footer.php'); ?>
+
+</body>
+</html>
+
+<button class="btn-fill-stall bg-yellow-100 hover:bg-yellow-200 text-yellow-700 px-2 py-1 rounded text-xs"
+                                data-stall="<?= $stall_json ?>">
+                            <i class="fa fa-user-plus"></i> Fill
+                        </button>
+
+                      <a href="../actions/logout.php" class="flex items-center py-2 px-3 rounded-lg text-red-300 hover:bg-red-700/30 font-medium mt-auto">
+      <svg class="w-5 h-5 mr-3 min-w-[20px]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+      <span class="nav-text">Logout</span>
+    </a>
